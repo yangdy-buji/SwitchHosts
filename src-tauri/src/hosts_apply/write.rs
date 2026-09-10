@@ -52,7 +52,7 @@ pub fn apply_to_system_hosts(
     let previous_lf = normalize_line_endings(&previous_raw);
 
     let final_content_lf = if write_mode == "append" {
-        make_append_content(&previous_lf, &content_lf)
+        make_append_content(&previous_lf, &content_lf)?
     } else {
         content_lf.clone()
     };
@@ -184,17 +184,27 @@ fn restore_line_endings(s: &str) -> String {
 
 // ---- append-mode helper ----------------------------------------------------
 
-fn make_append_content(previous_lf: &str, new_content_lf: &str) -> String {
+pub(crate) fn make_append_content(
+    previous_lf: &str,
+    new_content_lf: &str,
+) -> Result<String, HostsApplyError> {
+    // The native bridge can exist above the ordinary append marker. Its
+    // selected entry is already present in the new aggregation, so splice
+    // against the baseline with that previous managed block removed.
+    let previous_lf = crate::spider::strip_block(previous_lf)
+        .map_err(|message| HostsApplyError::Io { message })?;
     let head = match previous_lf.find(CONTENT_START_MARKER) {
         Some(idx) => previous_lf[..idx].trim_end().to_string(),
         None => previous_lf.to_string(),
     };
 
     if new_content_lf.is_empty() {
-        return format!("{head}\n");
+        return Ok(format!("{head}\n"));
     }
 
-    format!("{head}\n\n{CONTENT_START_MARKER}\n\n{new_content_lf}")
+    Ok(format!(
+        "{head}\n\n{CONTENT_START_MARKER}\n\n{new_content_lf}"
+    ))
 }
 
 // ---- comparison hash --------------------------------------------------------

@@ -7,6 +7,7 @@ pub const HOST: &str = "127.0.0.1:50761";
 pub const ORIGIN: &str = "https://spider.yangdy.com";
 const BEGIN: &str = "# BEGIN SPIDER MANAGED";
 const END: &str = "# END SPIDER MANAGED";
+const BEGIN_WITH_SEPARATOR: &str = "# BEGIN SPIDER MANAGED (separator added)";
 pub const ENTRY_ID: &str = "spider-managed-environment";
 pub static APPLY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -78,7 +79,7 @@ fn conflicts(existing: &str, incoming: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn strip_block(content: &str) -> Result<String, String> {
+pub(crate) fn strip_block(content: &str) -> Result<String, String> {
     let starts: Vec<_> = content.match_indices(BEGIN).collect();
     let ends: Vec<_> = content.match_indices(END).collect();
     if starts.is_empty() && ends.is_empty() {
@@ -87,21 +88,40 @@ fn strip_block(content: &str) -> Result<String, String> {
     if starts.len() != 1 || ends.len() != 1 || starts[0].0 >= ends[0].0 {
         return Err("Corrupt Spider managed block; recovery required".into());
     }
-    let start = starts[0].0;
+    let mut start = starts[0].0;
     if start > 0 && !content[..start].ends_with('\n') {
         return Err("Invalid Spider marker".into());
     }
-    let end = ends[0].0 + END.len();
-    if !content[end..].starts_with('\n') && end != content.len() {
+    let header = content[start..].lines().next().unwrap_or("");
+    if header != BEGIN && header != BEGIN_WITH_SEPARATOR {
         return Err("Invalid Spider marker".into());
     }
-    let end = if content[end..].starts_with('\n') {
+    if header == BEGIN_WITH_SEPARATOR {
+        if start == 0 {
+            return Err("Missing Spider separator".into());
+        }
+        // The separator is owned by the block. Ordinary Windows apply may
+        // have converted its LF to CRLF since the native transaction.
+        start -= if content[..start].ends_with("\r\n") {
+            2
+        } else {
+            1
+        };
+    }
+    let end = ends[0].0 + END.len();
+    let tail = &content[end..];
+    let end = if tail.starts_with("\r\n") {
+        end + 2
+    } else if tail.starts_with('\n') {
         end + 1
-    } else {
+    } else if tail.is_empty() {
         end
+    } else {
+        return Err("Invalid Spider marker".into());
     };
     Ok(format!("{}{}", &content[..start], &content[end..]))
 }
+
 fn compose(current: &str, incoming: &str) -> Result<String, String> {
     let baseline = strip_block(current)?;
     if incoming.is_empty() {
@@ -113,8 +133,13 @@ fn compose(current: &str, incoming: &str) -> Result<String, String> {
     } else {
         "\n"
     };
+    let begin = if separator.is_empty() {
+        BEGIN
+    } else {
+        BEGIN_WITH_SEPARATOR
+    };
     Ok(format!(
-        "{baseline}{separator}{BEGIN}\n{}{END}\n",
+        "{baseline}{separator}{begin}\n{}{END}\n",
         if incoming.ends_with('\n') {
             incoming.to_string()
         } else {
@@ -179,6 +204,16 @@ mod tests {
         assert_eq!(compose(&installed, "1.2.3.4 foo").unwrap(), installed);
         assert_eq!(compose(&installed, "").unwrap(), original);
         assert!(strip_block("# BEGIN SPIDER MANAGED\nmissing end").is_err());
+    }
+    #[test]
+    fn reset_preserves_baseline_without_final_newline_and_accepts_crlf_markers() {
+        let baseline = "127.0.0.1 localhost";
+        let applied = compose(baseline, "2.2.2.2 foo").unwrap();
+        assert_eq!(compose(&applied, "").unwrap(), baseline);
+        let crlf = compose("127.0.0.1 localhost\n", "2.2.2.2 foo")
+            .unwrap()
+            .replace('\n', "\r\n");
+        assert_eq!(compose(&crlf, "").unwrap(), "127.0.0.1 localhost\r\n");
     }
     #[test]
     fn guard_rejects_foreign_peer_host_origin_and_token() {
@@ -299,6 +334,33 @@ mod transaction_tests {
         assert!(check_aggregate(&paths, &aggregate)
             .unwrap()
             .contains("2.2.2.2 foo"));
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+    #[test]
+    fn native_then_ordinary_append_remains_switchable_and_resettable() {
+        let (paths, hosts) = fixture();
+        let mut write = |s: &str| std::fs::write(&hosts, s).map_err(|e| e.to_string());
+        apply(
+            &paths,
+            &hosts,
+            &request("daily", "2.2.2.2 foo\n"),
+            &mut write,
+        )
+        .unwrap();
+        let aggregate =
+            check_aggregate(&paths, &aggregate_for_ui(&paths, &[], false).unwrap()).unwrap();
+        let disk = std::fs::read_to_string(&hosts).unwrap();
+        let append = crate::hosts_apply::write::make_append_content(&disk, &aggregate).unwrap();
+        std::fs::write(&hosts, append).unwrap();
+        apply(
+            &paths,
+            &hosts,
+            &request("prod", "3.3.3.3 foo\n"),
+            &mut write,
+        )
+        .unwrap();
+        apply(&paths, &hosts, &request("system", ""), &mut write).unwrap();
+        assert!(!std::fs::read_to_string(&hosts).unwrap().contains(BEGIN));
         std::fs::remove_dir_all(paths.root).unwrap();
     }
     #[test]
