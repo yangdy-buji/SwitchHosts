@@ -67,6 +67,16 @@ pub fn read_entry(entries_dir: &Path, id: &str) -> Result<String, StorageError> 
 /// CRLF from a Windows-authored remote hosts file); it is normalized
 /// to LF before hitting disk so the on-disk invariant holds.
 pub fn write_entry(entries_dir: &Path, id: &str, content: &str) -> Result<(), StorageError> {
+    require_user_owned(id)?;
+    write_managed_entry(entries_dir, id, content)
+}
+
+/// Native transaction only: the Spider engine journals these writes before applying.
+pub(crate) fn write_managed_entry(
+    entries_dir: &Path,
+    id: &str,
+    content: &str,
+) -> Result<(), StorageError> {
     let path = entry_path(entries_dir, id)?;
     let normalized = normalize_to_lf(content);
     atomic_write(&path, normalized.as_bytes())
@@ -74,7 +84,22 @@ pub fn write_entry(entries_dir: &Path, id: &str, content: &str) -> Result<(), St
 
 /// Delete a node's content file. No-op if the file is already gone.
 /// Used by trashcan "delete permanently" and "clear trashcan" commands.
+pub fn require_user_owned(id: &str) -> Result<(), StorageError> {
+    if crate::spider::is_managed_id(id) {
+        return Err(StorageError::InvalidConfigValue {
+            key: "spider".into(),
+            reason: "Spider profiles are read-only; select an environment or sync from Spider"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
 pub fn delete_entry(entries_dir: &Path, id: &str) -> Result<(), StorageError> {
+    require_user_owned(id)?;
+    delete_managed_entry(entries_dir, id)
+}
+pub(crate) fn delete_managed_entry(entries_dir: &Path, id: &str) -> Result<(), StorageError> {
     let path = entry_path(entries_dir, id)?;
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),

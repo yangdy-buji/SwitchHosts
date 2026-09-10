@@ -49,6 +49,7 @@ const LEGACY_TO_NEW: Record<string, string> = {
   // Semantic rename: Electron "setSystemHosts" took raw content; v5 takes
   // selection ids and aggregates inside hosts_apply.
   setSystemHosts: 'apply_hosts_selection',
+  toggleSpiderEnvironment: 'toggle_spider_environment',
   refreshHosts: 'refresh_remote_hosts',
   getHistoryList: 'get_apply_history',
   deleteHistory: 'delete_apply_history_item',
@@ -105,14 +106,15 @@ const REMOVED = new Set<string>([
 ])
 
 function snakeCase(s: string): string {
-  return s.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '')
+  return s
+    .replace(/([A-Z])/g, '_$1')
+    .toLowerCase()
+    .replace(/^_/, '')
 }
 
 function resolveCommandName(action: string): string {
   if (REMOVED.has(action)) {
-    throw new Error(
-      `[v5] action "${action}" was removed in the Tauri migration`,
-    )
+    throw new Error(`[v5] action "${action}" was removed in the Tauri migration`)
   }
   return LEGACY_TO_NEW[action] ?? snakeCase(action)
 }

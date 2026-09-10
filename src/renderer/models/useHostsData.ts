@@ -6,15 +6,21 @@
 import version from '@/version.json'
 import { IHostsBasicData, IHostsListObject } from '@common/data'
 import { actions } from '@renderer/core/agent'
+import { isSpiderManaged } from '@common/spider'
 import { currentHostsAtom, hostsDataAtom } from '@renderer/stores/hosts_data'
 import { useAtom } from 'jotai'
+
+// Shared by every hook instance in this window, including reload event listeners.
+let loadGeneration = 0
 
 export default function useHostsData() {
   const [hostsData, setHostsData] = useAtom(hostsDataAtom)
   const [currentHosts, setCurrentHosts] = useAtom(currentHostsAtom)
 
   const loadHostsData = async () => {
-    setHostsData(await actions.getBasicData())
+    const generation = ++loadGeneration
+    const data = await actions.getBasicData()
+    if (generation === loadGeneration) setHostsData(data)
   }
 
   const setList = async (list: IHostsListObject[]) => {
@@ -28,6 +34,7 @@ export default function useHostsData() {
 
     setHostsData(data)
     await actions.setList(list)
+    await loadHostsData()
     await actions.updateTrayTitle()
   }
 
@@ -42,7 +49,7 @@ export default function useHostsData() {
       return true
     }
 
-    if (hosts.id === '0') {
+    if (hosts.id === '0' || isSpiderManaged(hosts.id)) {
       return true // system hosts
     }
 

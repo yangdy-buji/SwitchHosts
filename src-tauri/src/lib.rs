@@ -8,13 +8,13 @@ pub mod helper_proto;
 mod hosts_apply;
 mod http;
 mod http_api;
-mod spider;
-mod spider_http;
 mod i18n;
 mod import_export;
 mod lifecycle;
 mod migration;
 mod refresh;
+mod spider;
+mod spider_http;
 mod storage;
 mod tray;
 mod window_theme;
@@ -504,6 +504,7 @@ pub fn run() {
             commands::get_path_of_system_hosts,
             // apply / refresh
             commands::apply_hosts_selection,
+            commands::toggle_spider_environment,
             // privileged helper (macOS SMAppService)
             commands::helper_status,
             commands::helper_install,

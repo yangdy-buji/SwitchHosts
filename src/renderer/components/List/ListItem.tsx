@@ -5,6 +5,7 @@
 
 import { IHostsListObject } from '@common/data'
 import events from '@common/events'
+import { isSpiderManaged } from '@common/spider'
 import { IMenuItemOption } from '@common/types'
 import { ActionIcon } from '@mantine/core'
 import ItemIcon from '@renderer/components/ItemIcon'
@@ -150,7 +151,7 @@ const ListItem = (props: Props) => {
 
         const menu = new PopupMenu(menuItems)
 
-        if (!data.is_sys && !isTray) menu.show()
+        if (!data.is_sys && !isTray && !isSpiderManaged(data.id)) menu.show()
         e.preventDefault()
         e.stopPropagation()
       }}
@@ -181,7 +182,10 @@ const ListItem = (props: Props) => {
       <div className={styles.status}>
         {data.is_sys ? null : (
           <>
-            <div className={styles.edit}>
+            <div
+              className={styles.edit}
+              style={isSpiderManaged(data.id) ? { display: 'none' } : undefined}
+            >
               <ActionIcon
                 variant="subtle"
                 onClick={() => {
@@ -192,7 +196,11 @@ const ListItem = (props: Props) => {
                 <IconEdit size={16} stroke={1.5} />
               </ActionIcon>
             </div>
-            <SwitchButton on={!!isOn} onChange={(on) => toggleOn(on)} />
+            <SwitchButton
+              on={!!isOn}
+              onChange={(on) => toggleOn(on)}
+              ariaLabel={isSpiderManaged(data.id) ? `Spider ${isFolder ? '分组' : title}` : title}
+            />
           </>
         )}
       </div>

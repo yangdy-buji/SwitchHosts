@@ -366,7 +366,9 @@ pub fn replace_one_in_manifest(state: &AppState, args: FindReplaceOneArgs) -> Re
     };
     // Missing type is treated as local for older/migrated manifests; remote
     // entries remain read-only from the find window.
-    if node.get("type").and_then(Value::as_str).unwrap_or("local") != "local" {
+    if crate::spider::is_managed_id(&args.item_id)
+        || node.get("type").and_then(Value::as_str).unwrap_or("local") != "local"
+    {
         return Ok(false);
     }
 
@@ -408,7 +410,7 @@ pub fn replace_all_in_manifest(
         if read_error.is_some() {
             return;
         }
-        if kind != "local" {
+        if kind != "local" || crate::spider::is_managed_id(id) {
             return;
         }
         let content = match entries::read_entry(&state.paths.entries_dir, id) {

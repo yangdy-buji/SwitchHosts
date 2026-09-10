@@ -5,6 +5,7 @@
 
 import { IHostsListObject } from '@common/data'
 import events from '@common/events'
+import { isSpiderManaged } from '@common/spider'
 import { findItemById, flatten, getNextSelectedItem, setOnStateOfItem } from '@common/hostsFn'
 import { IFindShowSourceParam } from '@common/types'
 import ItemIcon from '@renderer/components/ItemIcon'
@@ -30,9 +31,7 @@ const List = (props: Props) => {
   const { hostsData, loadHostsData, setList, currentHosts, setCurrentHosts } = useHostsData()
   const { configs } = useConfigs()
   const { lang } = useI18n()
-  const [selectedIds, setSelectedIds] = useState<string[]>(
-    isTray ? [] : [currentHosts?.id || '0'],
-  )
+  const [selectedIds, setSelectedIds] = useState<string[]>(isTray ? [] : [currentHosts?.id || '0'])
   const [showList, setShowList] = useState<IHostsListObject[]>([])
   const remoteContentApplyRef = useRef({
     isApplying: false,
@@ -65,7 +64,31 @@ const List = (props: Props) => {
     setSelectedIds([])
   }, [currentHosts, hostsData.trashcan, isTray])
 
+  const spiderQueue = useRef(Promise.resolve())
+  const toggleSpider = async (id: string, on: boolean) => {
+    try {
+      const result = await actions.toggleSpiderEnvironment(id, on)
+      if (!result.success && result.code !== 'cancelled') {
+        showErrorNotification({ title: lang.fail, message: result.message || lang.fail })
+      }
+    } catch (error) {
+      showErrorNotification({ title: lang.fail, message: String(error) })
+    } finally {
+      await loadHostsData()
+      const current = await actions.getList()
+      for (const node of flatten(current).filter((item) => isSpiderManaged(item.id))) {
+        await agent.broadcast(events.set_hosts_on_status, node.id, !!node.on)
+      }
+      await agent.broadcast(events.tray_list_updated)
+    }
+  }
   const onToggleItem = async (id: string, on: boolean) => {
+    if (isSpiderManaged(id)) {
+      spiderQueue.current = spiderQueue.current
+        .then(() => toggleSpider(id, on))
+        .catch(console.error)
+      return spiderQueue.current
+    }
     if (!configs?.write_mode) {
       agent.broadcast(events.show_set_write_mode, { id, on })
       return
@@ -257,10 +280,7 @@ const List = (props: Props) => {
               .map((i) => i.id)
               .join('\n')
 
-          if (
-            enabledIdSeq(hostsData.list) !== enabledIdSeq(newUserList) &&
-            configs?.write_mode
-          ) {
+          if (enabledIdSeq(hostsData.list) !== enabledIdSeq(newUserList) && configs?.write_mode) {
             writeHostsToSystem(newUserList).catch((e) => console.error(e))
           } else {
             setList(newUserList).catch((e) => console.error(e))
@@ -288,10 +308,10 @@ const List = (props: Props) => {
         }
         nodeAttr={(item) => {
           return {
-            can_drag: !item.is_sys && !isTray,
-            can_drop_before: !item.is_sys,
-            can_drop_in: item.type === 'folder',
-            can_drop_after: !item.is_sys,
+            can_drag: !item.is_sys && !isTray && !isSpiderManaged(item.id),
+            can_drop_before: !item.is_sys && !isSpiderManaged(item.id),
+            can_drop_in: item.type === 'folder' && !isSpiderManaged(item.id),
+            can_drop_after: !item.is_sys && !isSpiderManaged(item.id),
           }
         }}
         draggingNodeRender={(data) => {

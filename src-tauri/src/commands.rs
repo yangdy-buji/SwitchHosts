@@ -415,16 +415,20 @@ pub async fn get_content_of_list(
         cfg.remove_duplicate_records
     };
 
-    let _apply = crate::spider::APPLY_LOCK.lock().map_err(|_| StorageError::InvalidConfigValue {
-        key: "apply".into(),
-        reason: "Apply lock poisoned".into(),
-    })?;
+    let _apply =
+        crate::spider::APPLY_LOCK
+            .lock()
+            .map_err(|_| StorageError::InvalidConfigValue {
+                key: "apply".into(),
+                reason: "Apply lock poisoned".into(),
+            })?;
     let _store = state.store_lock.lock().expect("store lock poisoned");
-    let content = crate::spider::aggregate_for_ui(&state.paths, &list, remove_duplicate)
-        .map_err(|reason| StorageError::InvalidConfigValue {
+    let content = crate::spider::aggregate_for_ui(&state.paths, &list, remove_duplicate).map_err(
+        |reason| StorageError::InvalidConfigValue {
             key: "spider".into(),
             reason,
-        })?;
+        },
+    )?;
     Ok(json!(content))
 }
 
@@ -487,9 +491,39 @@ pub async fn move_many_to_trashcan(
     Ok(Value::Null)
 }
 
+fn restore_user_node(
+    m: &mut Manifest,
+    node: Value,
+    parent_id: Option<&str>,
+) -> Result<(), StorageError> {
+    require_user_tree(&node)?;
+    if let Some(parent) = parent_id {
+        entries::require_user_owned(parent)?;
+    }
+    manifest::insert_node(&mut m.root, node, parent_id);
+    Ok(())
+}
+
+fn require_user_tree(node: &Value) -> Result<(), StorageError> {
+    if let Some(id) = node["id"].as_str() {
+        entries::require_user_owned(id)?;
+    }
+    if let Some(children) = node["children"].as_array() {
+        for child in children {
+            require_user_tree(child)?;
+        }
+    }
+    Ok(())
+}
+
 fn move_ids_to_trashcan(state: &AppState, ids: &[String]) -> Result<(), StorageError> {
     let mut m = load_manifest(state).unwrap_or_default();
     let mut t = load_trashcan(state).unwrap_or_default();
+    for id in ids {
+        if let Some(node) = manifest::find_node(&m.root, id) {
+            require_user_tree(&node)?;
+        }
+    }
     for id in ids {
         if let Some((node, parent_id)) = manifest::remove_node(&mut m.root, id) {
             t.add_item(node, parent_id);
@@ -589,7 +623,7 @@ pub async fn restore_item_from_trashcan(
     }
 
     let mut m = load_manifest(&state).unwrap_or_default();
-    manifest::insert_node(&mut m.root, node, parent_id.as_deref());
+    restore_user_node(&mut m, node, parent_id.as_deref())?;
     save_manifest(&state, &m)?;
     save_trashcan(&state, &t)?;
     Ok(json!(true))
@@ -685,13 +719,20 @@ pub async fn apply_hosts_selection<R: Runtime>(
     // order. Keep selection persistence inside this operation so a renderer
     // cannot overwrite a concurrently installed managed entry after applying.
     let outcome = match {
-        let _apply = crate::spider::APPLY_LOCK.lock().map_err(|_| "Apply lock poisoned")?;
-        let _store = state.store_lock.lock().map_err(|_| "Storage lock poisoned")?;
+        let _apply = crate::spider::APPLY_LOCK
+            .lock()
+            .map_err(|_| "Apply lock poisoned")?;
+        let _store = state
+            .store_lock
+            .lock()
+            .map_err(|_| "Storage lock poisoned")?;
         let content = match crate::spider::require_no_pending_transaction(&state.paths)
             .and_then(|()| crate::spider::check_aggregate(&state.paths, &content))
         {
             Ok(content) => content,
-            Err(message) => return Ok(json!({"success": false, "code": "fail", "message": message})),
+            Err(message) => {
+                return Ok(json!({"success": false, "code": "fail", "message": message}))
+            }
         };
         let result = hosts_apply::apply_to_system_hosts(&content, &write_mode);
         if result.is_ok() {
@@ -789,6 +830,27 @@ pub async fn apply_hosts_selection<R: Runtime>(
         "old_content": outcome.previous_content,
         "new_content": outcome.new_content,
     }))
+}
+
+#[tauri::command]
+pub async fn toggle_spider_environment(app: AppHandle<Wry>, args: Args) -> Result<Value, String> {
+    let id = args
+        .first()
+        .and_then(Value::as_str)
+        .ok_or("Expected a Spider profile id")?
+        .to_string();
+    let on = args
+        .get(1)
+        .and_then(Value::as_bool)
+        .ok_or("Expected an on/off state")?;
+    match crate::spider_http::execute_change(app, crate::spider_http::Change::Toggle { id, on })
+        .await
+    {
+        Ok(status) => Ok(json!({"success":true,"status":status})),
+        Err(message) => Ok(
+            json!({"success":false,"code":if message.to_ascii_lowercase().contains("cancel") {"cancelled"} else {"fail"},"message":message}),
+        ),
+    }
 }
 
 // ---- privileged helper (macOS SMAppService) --------------------------------
@@ -1299,6 +1361,27 @@ mod export_file_name_tests {
     use super::export_file_name_for;
 
     #[test]
+    fn spider_restore_cannot_inject_owned_ids_or_children() {
+        use super::*;
+        let owned = json!({"id":crate::spider::ENTRY_ID,"type":"folder","children":[]});
+        let mut manifest = Manifest::default();
+        manifest.root.push(owned);
+        let before = manifest.root.clone();
+        assert!(restore_user_node(
+            &mut manifest,
+            json!({"id":"spider-managed-environment-daily","on":true}),
+            None
+        )
+        .is_err());
+        assert!(restore_user_node(
+            &mut manifest,
+            json!({"id":"user","on":true}),
+            Some(crate::spider::ENTRY_ID)
+        )
+        .is_err());
+        assert_eq!(manifest.root, before);
+    }
+    #[test]
     fn includes_millisecond_timestamp() {
         let now = chrono::Local
             .with_ymd_and_hms(2026, 5, 9, 12, 14, 36)
@@ -1788,10 +1871,7 @@ pub async fn apply_data_dir<R: Runtime>(
     // root is a degraded fallback, so even a missing pointer must still
     // restart to leave recovery — never short-circuit there, or the dialog's
     // button spins forever on a no-op that never restarts.
-    if is_default
-        && !data_dir_pointer::pointer_exists()
-        && state.data_dir_recovery.is_none()
-    {
+    if is_default && !data_dir_pointer::pointer_exists() && state.data_dir_recovery.is_none() {
         return Ok(json!({ "changed": false }));
     }
 

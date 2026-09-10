@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
     getContentOfList: vi.fn(),
     getList: vi.fn(),
     setSystemHosts: vi.fn(),
+    toggleSpiderEnvironment: vi.fn(),
   },
   broadcast: vi.fn(),
   handlers: new Map<string, Handler[]>(),
@@ -138,6 +139,7 @@ describe('List tray synchronization', () => {
     mocks.actions.getContentOfList.mockReset()
     mocks.actions.getList.mockReset()
     mocks.actions.setSystemHosts.mockReset()
+    mocks.actions.toggleSpiderEnvironment.mockReset().mockResolvedValue({ success: true })
     mocks.broadcast.mockReset()
     mocks.handlers.clear()
     mocks.loadHostsData.mockReset()
@@ -155,6 +157,86 @@ describe('List tray synchronization', () => {
     }
     mocks.actions.getList.mockResolvedValue(mocks.hostsList)
     mocks.loadHostsData.mockResolvedValue(undefined)
+  })
+
+  it('routes managed toggles through cached native transaction without aggregate or write-mode setup', async () => {
+    const previousMode = mocks.configs.write_mode
+    mocks.configs.write_mode = ''
+    try {
+      render(<List />)
+      await act(async () => {
+        latestHandler(events.toggle_item)('spider-managed-environment-prod', true)
+      })
+      await waitFor(() =>
+        expect(mocks.actions.toggleSpiderEnvironment).toHaveBeenCalledWith(
+          'spider-managed-environment-prod',
+          true,
+        ),
+      )
+      expect(mocks.actions.getContentOfList).not.toHaveBeenCalled()
+      expect(mocks.actions.setSystemHosts).not.toHaveBeenCalled()
+      expect(mocks.setList).not.toHaveBeenCalled()
+      expect(mocks.loadHostsData).toHaveBeenCalled()
+    } finally {
+      mocks.configs.write_mode = previousMode
+    }
+  })
+
+  it('reloads authoritative managed toggle state after failure without broadcasting stale inversion', async () => {
+    mocks.actions.toggleSpiderEnvironment.mockResolvedValue({ success: false, code: 'cancelled' })
+    mocks.actions.getList.mockResolvedValue([
+      {
+        id: 'spider-managed-environment',
+        type: 'folder',
+        on: true,
+        children: [
+          { id: 'spider-managed-environment-daily', on: true },
+          { id: 'spider-managed-environment-prod', on: false },
+        ],
+      },
+    ])
+    render(<List />)
+    await act(async () => {
+      latestHandler(events.toggle_item)('spider-managed-environment-prod', true)
+    })
+    await waitFor(() =>
+      expect(mocks.broadcast).toHaveBeenCalledWith(
+        events.set_hosts_on_status,
+        'spider-managed-environment-prod',
+        false,
+      ),
+    )
+    expect(mocks.broadcast).toHaveBeenCalledWith(
+      events.set_hosts_on_status,
+      'spider-managed-environment-daily',
+      true,
+    )
+    expect(mocks.showErrorNotification).not.toHaveBeenCalled()
+    expect(mocks.actions.setSystemHosts).not.toHaveBeenCalled()
+  })
+
+  it('serializes rapid cached toggles so an older response cannot repaint newer selection', async () => {
+    const first = deferred<{ success: boolean }>()
+    mocks.actions.toggleSpiderEnvironment
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue({ success: true })
+    render(<List />)
+    const toggle = latestHandler(events.toggle_item)
+    await act(async () => {
+      toggle('spider-managed-environment-daily', true)
+      toggle('spider-managed-environment-prod', true)
+    })
+    expect(mocks.actions.toggleSpiderEnvironment).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      first.resolve({ success: true })
+      await first.promise
+    })
+    await waitFor(() => expect(mocks.actions.toggleSpiderEnvironment).toHaveBeenCalledTimes(2))
+    expect(mocks.actions.toggleSpiderEnvironment.mock.calls[1]).toEqual([
+      'spider-managed-environment-prod',
+      true,
+    ])
+    expect(mocks.actions.setSystemHosts).not.toHaveBeenCalled()
   })
 
   it('notifies the tray after native apply persists the selection and the list reloads', async () => {

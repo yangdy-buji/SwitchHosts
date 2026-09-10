@@ -41,6 +41,12 @@ pub fn router(app: AppHandle<Wry>) -> Router {
             "/api/v1/spider/environment",
             put(environment).options(preflight),
         )
+        .route(
+            "/api/v1/spider/profiles",
+            put(profiles)
+                .options(preflight)
+                .layer(DefaultBodyLimit::max(810 * 1024)),
+        )
         .layer(DefaultBodyLimit::max(270 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -168,7 +174,7 @@ async fn pair(State(app): State<AppHandle<Wry>>) -> Response {
         let _reset=Reset;
         let state=app.state::<AppState>();state.require_data_dir_usable().map_err(|e|e.to_string())?;
         // blocking_show runs on this worker; plugin schedules the native window.
-        let approved=app.dialog().message("允许 https://spider.yangdy.com 切换此电脑的 Spider 运行环境 hosts？仅管理 Spider运行环境 条目。请仅在你刚刚点击连接时允许。").title("连接 Spider 与 SwitchHosts").buttons(MessageDialogButtons::OkCancel).blocking_show();
+        let approved=app.dialog().message("允许 https://spider.yangdy.com 切换此电脑的 Spider 运行环境 hosts？仅管理 Spider 环境分组。请仅在你刚刚点击连接时允许。").title("连接 Spider 与 SwitchHosts").buttons(MessageDialogButtons::OkCancel).blocking_show();
         if !approved{return Err("Pairing cancelled".to_string());}
         let _guard=state.store_lock.lock().map_err(|_|"Storage lock poisoned")?;
         persist_token(&state)
@@ -207,7 +213,32 @@ async fn environment(
         Ok(r) => r,
         Err(e) => return error(StatusCode::BAD_REQUEST, e),
     };
-    match tauri::async_runtime::spawn_blocking(move || {
+    respond_change(app, Change::Environment(request)).await
+}
+async fn profiles(
+    State(app): State<AppHandle<Wry>>,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    let body = match body {
+        Ok(b) => b,
+        Err(e) => return error(StatusCode::PAYLOAD_TOO_LARGE, e),
+    };
+    let request = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+    respond_change(app, Change::Profiles(request)).await
+}
+pub(crate) enum Change {
+    Environment(spider::Environment),
+    Profiles(spider::Profiles),
+    Toggle { id: String, on: bool },
+}
+pub(crate) async fn execute_change(
+    app: AppHandle<Wry>,
+    change: Change,
+) -> Result<spider::Status, String> {
+    tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         state.require_data_dir_usable().map_err(|e| e.to_string())?;
         let _apply = spider::APPLY_LOCK
@@ -246,16 +277,28 @@ async fn environment(
             }
             Ok(())
         };
-        let status = spider::apply(&state.paths, &hosts, &request, &mut writer)?;
+        let status = match change {
+            Change::Environment(request) => {
+                spider::apply(&state.paths, &hosts, &request, &mut writer)
+            }
+            Change::Profiles(request) => {
+                spider::sync_profiles(&state.paths, &hosts, &request, &mut writer)
+            }
+            Change::Toggle { id, on } => {
+                spider::toggle_cached(&state.paths, &hosts, &id, on, &mut writer)
+            }
+        }?;
         let _ = app.emit("system_hosts_updated", json!({"_args":[]}));
         let _ = app.emit("reload_list", json!({"_args":[]}));
         Ok::<_, String>(status)
     })
     .await
-    {
-        Ok(Ok(status)) => Json(status).into_response(),
-        Ok(Err(e)) => error(StatusCode::CONFLICT, e),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    .map_err(|e| e.to_string())?
+}
+async fn respond_change(app: AppHandle<Wry>, change: Change) -> Response {
+    match execute_change(app, change).await {
+        Ok(status) => Json(status).into_response(),
+        Err(e) => error(StatusCode::CONFLICT, e),
     }
 }
 

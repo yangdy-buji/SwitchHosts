@@ -97,7 +97,7 @@ fn import_v3(data: &Value, paths: &V5Paths) -> Result<Value, StorageError> {
         converted.push(convert_v3_node(node, paths)?);
     }
 
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         root: converted,
         ..Default::default()
     };
@@ -105,6 +105,7 @@ fn import_v3(data: &Value, paths: &V5Paths) -> Result<Value, StorageError> {
     // v3 backups had no trashcan — reset to empty so the user isn't
     // looking at stale entries from a previous import.
     Trashcan::default().save(&paths.trashcan_file)?;
+    preserve_spider(&mut manifest, paths)?;
     manifest.save(paths)?;
 
     Ok(json!(true))
@@ -155,7 +156,7 @@ fn convert_v3_node(node: &Value, paths: &V5Paths) -> Result<Value, StorageError>
 
     // If the original node had inline content, write it to entries.
     if let Some(id) = obj.get("id").and_then(Value::as_str) {
-        if id != "0" {
+        if id != "0" && !crate::spider::is_managed_id(id) {
             if let Some(content) = obj.get("content").and_then(Value::as_str) {
                 entries::write_entry(&paths.entries_dir, id, content)?;
             }
@@ -222,7 +223,7 @@ fn import_v4(data: &Value, paths: &V5Paths) -> Result<Value, StorageError> {
         let id = entry.get("id").and_then(Value::as_str);
         let content = entry.get("content").and_then(Value::as_str);
         if let (Some(id), Some(content)) = (id, content) {
-            if id == "0" {
+            if id == "0" || crate::spider::is_managed_id(id) {
                 continue;
             }
             entries::write_entry(&paths.entries_dir, id, content)?;
@@ -236,11 +237,12 @@ fn import_v4(data: &Value, paths: &V5Paths) -> Result<Value, StorageError> {
     }
     .save(&paths.trashcan_file)?;
 
-    Manifest {
+    let mut imported = Manifest {
         root: tree,
         ..Default::default()
-    }
-    .save(paths)?;
+    };
+    preserve_spider(&mut imported, paths)?;
+    imported.save(paths)?;
 
     if !history_data.is_empty() {
         write_history(
@@ -284,7 +286,7 @@ fn import_v5(data: &Value, paths: &V5Paths) -> Result<Value, StorageError> {
     // migration: manifest.json is the commit marker).
     if let Some(entries_obj) = entries_value.and_then(Value::as_object) {
         for (id, content_val) in entries_obj {
-            if id == "0" {
+            if id == "0" || crate::spider::is_managed_id(id) {
                 continue;
             }
             let content = content_val.as_str().unwrap_or("");
@@ -303,13 +305,20 @@ fn import_v5(data: &Value, paths: &V5Paths) -> Result<Value, StorageError> {
     }
     .save(&paths.trashcan_file)?;
 
-    Manifest {
+    let mut imported = Manifest {
         root,
         ..Default::default()
-    }
-    .save(paths)?;
+    };
+    preserve_spider(&mut imported, paths)?;
+    imported.save(paths)?;
 
     Ok(json!(true))
+}
+
+fn preserve_spider(imported: &mut Manifest, paths: &V5Paths) -> Result<(), StorageError> {
+    let current = Manifest::load(paths)?;
+    crate::spider::retain_managed_entry(&current.root, &mut imported.root);
+    Ok(())
 }
 
 // ---- export ----------------------------------------------------------------
