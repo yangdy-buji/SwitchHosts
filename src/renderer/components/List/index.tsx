@@ -92,10 +92,10 @@ const List = (props: Props) => {
     }
 
     const content: string = await actions.getContentOfList(list)
-    const result = await actions.setSystemHosts(content)
+    const result = await actions.setSystemHosts(content, list)
     if (result.success) {
       try {
-        await setList(list)
+        await loadHostsData()
       } catch (e) {
         console.error(e)
       }

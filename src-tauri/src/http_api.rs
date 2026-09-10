@@ -130,11 +130,12 @@ async fn serve(app: AppHandle<Wry>, std_listener: std::net::TcpListener) -> Resu
         .route("/remote-test", get(remote_test))
         .route("/api/list", get(api_list))
         .route("/api/toggle", get(api_toggle))
-        .with_state(AppRouterState { app });
+        .with_state(AppRouterState { app: app.clone() })
+        .merge(crate::spider_http::router(app));
 
     let listener = tokio::net::TcpListener::from_std(std_listener)
         .map_err(|e| format!("tokio listener from_std: {e}"))?;
-    axum::serve(listener, router)
+    axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .map_err(|e| e.to_string())
 }

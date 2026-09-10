@@ -243,3 +243,49 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod exact_tests {
+    use super::*;
+    #[test]
+    fn exact_native_write_preserves_crlf_and_reports_actual_bytes() {
+        let path = std::env::temp_dir().join(format!("swh-exact-{}", std::process::id()));
+        let before = "127.0.0.1 localhost\r\n# user baseline\r\n";
+        std::fs::write(&path, before).unwrap();
+        let after = format!("{before}# BEGIN SPIDER MANAGED\n2.2.2.2 foo\n# END SPIDER MANAGED\n");
+        let result = apply_exact(&path, &after).unwrap();
+        assert_eq!(result.previous_content, before);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), after);
+        apply_exact(&path, before).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+/// Apply an already composed native transaction payload byte-for-byte. Spider's
+/// journal records actual bytes, including an existing CRLF baseline; normal UI
+/// writes retain the normalization/append behavior above.
+pub fn apply_exact_to_system_hosts(content: &str) -> Result<ApplyOutcome, HostsApplyError> {
+    apply_exact(&system_hosts_path()?, content)
+}
+fn apply_exact(target: &Path, content: &str) -> Result<ApplyOutcome, HostsApplyError> {
+    let previous = std::fs::read_to_string(target).map_err(|e| HostsApplyError::Io {
+        message: format!("read {}: {e}", target.display()),
+    })?;
+    let unchanged = previous == content;
+    if !unchanged {
+        match std::fs::write(target, content.as_bytes()) {
+            Ok(()) => {}
+            Err(e) if is_permission_denied(&e) => write_privileged(target, content)?,
+            Err(e) => {
+                return Err(HostsApplyError::Io {
+                    message: format!("write {}: {e}", target.display()),
+                })
+            }
+        }
+    }
+    Ok(ApplyOutcome {
+        previous_content: previous,
+        new_content: content.into(),
+        unchanged,
+    })
+}

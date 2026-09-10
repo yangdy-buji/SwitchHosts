@@ -157,9 +157,9 @@ describe('List tray synchronization', () => {
     mocks.loadHostsData.mockResolvedValue(undefined)
   })
 
-  it('notifies the tray after the new list state has been persisted', async () => {
+  it('notifies the tray after native apply persists the selection and the list reloads', async () => {
     const persistList = deferred()
-    mocks.setList.mockReturnValue(persistList.promise)
+    mocks.loadHostsData.mockReturnValue(persistList.promise)
 
     render(<List />)
 
@@ -171,7 +171,12 @@ describe('List tray synchronization', () => {
       toggleHandler('local-dev', true)
     })
 
-    await waitFor(() => expect(mocks.setList).toHaveBeenCalled())
+    await waitFor(() => expect(mocks.loadHostsData).toHaveBeenCalled())
+    expect(mocks.setList).not.toHaveBeenCalled()
+    expect(mocks.actions.setSystemHosts).toHaveBeenCalledWith(
+      '10.0.0.8 api.local\n',
+      expect.any(Array),
+    )
     expect(mocks.broadcast).not.toHaveBeenCalledWith(events.tray_list_updated)
 
     await act(async () => {

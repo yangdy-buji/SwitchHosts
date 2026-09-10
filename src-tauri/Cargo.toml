@@ -46,6 +46,8 @@ reqwest_013 = { package = "reqwest", version = "0.13", default-features = false,
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tokio = { version = "1", features = ["process", "time", "rt", "macros", "net"] }
 regex = "1"
+sha2 = "0.10"
+getrandom = "0.2"
 open = "5"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json"] }
 

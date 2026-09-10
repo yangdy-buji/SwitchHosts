@@ -415,7 +415,16 @@ pub async fn get_content_of_list(
         cfg.remove_duplicate_records
     };
 
-    let content = hosts_apply::aggregate_selected_content(&list, &state.paths, remove_duplicate)?;
+    let _apply = crate::spider::APPLY_LOCK.lock().map_err(|_| StorageError::InvalidConfigValue {
+        key: "apply".into(),
+        reason: "Apply lock poisoned".into(),
+    })?;
+    let _store = state.store_lock.lock().expect("store lock poisoned");
+    let content = crate::spider::aggregate_for_ui(&state.paths, &list, remove_duplicate)
+        .map_err(|reason| StorageError::InvalidConfigValue {
+            key: "spider".into(),
+            reason,
+        })?;
     Ok(json!(content))
 }
 
@@ -435,6 +444,8 @@ pub async fn set_list(state: State<'_, AppState>, args: Args) -> Result<Value, S
     };
     let _guard = state.store_lock.lock().expect("store lock poisoned");
     let mut m = load_manifest(&state).unwrap_or_default();
+    let mut root = root;
+    crate::spider::retain_managed_entry(&m.root, &mut root);
     m.root = root;
     save_manifest(&state, &m)?;
     Ok(Value::Null)
@@ -670,11 +681,30 @@ pub async fn apply_hosts_selection<R: Runtime>(
         )
     };
 
-    // The privileged write is potentially long-running (waits for the
-    // user at the OS auth prompt) and *must not* hold the store_lock —
-    // see implementation-notes A5. We do all the work outside the lock
-    // and only retake it for the history journal write below.
-    let outcome = match hosts_apply::apply_to_system_hosts(&content, &write_mode) {
+    // Native Spider writes and ordinary selection applies use the same lock
+    // order. Keep selection persistence inside this operation so a renderer
+    // cannot overwrite a concurrently installed managed entry after applying.
+    let outcome = match {
+        let _apply = crate::spider::APPLY_LOCK.lock().map_err(|_| "Apply lock poisoned")?;
+        let _store = state.store_lock.lock().map_err(|_| "Storage lock poisoned")?;
+        let content = match crate::spider::require_no_pending_transaction(&state.paths)
+            .and_then(|()| crate::spider::check_aggregate(&state.paths, &content))
+        {
+            Ok(content) => content,
+            Err(message) => return Ok(json!({"success": false, "code": "fail", "message": message})),
+        };
+        let result = hosts_apply::apply_to_system_hosts(&content, &write_mode);
+        if result.is_ok() {
+            if let Some(Value::Array(root)) = args.get(1) {
+                let mut manifest = load_manifest(&state).map_err(|e| e.to_string())?;
+                let mut root = root.clone();
+                crate::spider::retain_managed_entry(&manifest.root, &mut root);
+                manifest.root = root;
+                save_manifest(&state, &manifest).map_err(|e| e.to_string())?;
+            }
+        }
+        result
+    } {
         Ok(o) => o,
         Err(HostsApplyError::Cancelled) => {
             return Ok(HostsApplyError::Cancelled.into_renderer_value());

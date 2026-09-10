@@ -8,6 +8,8 @@ pub mod helper_proto;
 mod hosts_apply;
 mod http;
 mod http_api;
+mod spider;
+mod spider_http;
 mod i18n;
 mod import_export;
 mod lifecycle;
