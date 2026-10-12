@@ -288,12 +288,19 @@ pub(crate) async fn execute_change(
                 spider::toggle_cached(&state.paths, &hosts, &id, on, &mut writer)
             }
         }?;
+        if let Some((event, payload)) = profile_refresh_event(&status.mode) {
+            let _ = app.emit(event, payload);
+        }
         let _ = app.emit("system_hosts_updated", json!({"_args":[]}));
         let _ = app.emit("reload_list", json!({"_args":[]}));
         Ok::<_, String>(status)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+fn profile_refresh_event(mode: &str) -> Option<(&'static str, serde_json::Value)> {
+    spider::profile_refresh_id(mode)
+        .map(|profile_id| ("hosts_refreshed_by_id", json!({"_args":[profile_id]})))
 }
 async fn respond_change(app: AppHandle<Wry>, change: Change) -> Response {
     match execute_change(app, change).await {
@@ -320,6 +327,18 @@ mod tests {
         headers.append("origin", HeaderValue::from_static(spider::ORIGIN));
         headers.append("origin", HeaderValue::from_static("https://evil.test"));
         assert_eq!(header(&headers, "origin"), "");
+    }
+
+    #[test]
+    fn profile_refresh_event_targets_the_editor_content_listener() {
+        assert_eq!(
+            profile_refresh_event("daily"),
+            Some((
+                "hosts_refreshed_by_id",
+                json!({"_args":["spider-managed-environment-daily"]})
+            ))
+        );
+        assert_eq!(profile_refresh_event("system"), None);
     }
 }
 #[derive(Default)]
