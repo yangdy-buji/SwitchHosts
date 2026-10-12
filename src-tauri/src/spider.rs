@@ -200,6 +200,22 @@ mod tests {
         assert!(conflicts("1.2.3.4 foo", "1.2.3.5 foo").is_err());
     }
     #[test]
+    fn active_profile_refresh_id_matches_cached_child_id() {
+        assert_eq!(
+            profile_refresh_id("daily").as_deref(),
+            Some("spider-managed-environment-daily")
+        );
+        assert_eq!(
+            profile_refresh_id("staging").as_deref(),
+            Some("spider-managed-environment-staging")
+        );
+        assert_eq!(
+            profile_refresh_id("prod").as_deref(),
+            Some("spider-managed-environment-prod")
+        );
+        assert_eq!(profile_refresh_id("system"), None);
+    }
+    #[test]
     fn managed_block_preserves_baseline_and_reset_is_idempotent() {
         let original = "127.0.0.1 localhost\n# user comment\n";
         let installed = compose(original, "1.2.3.4 foo").unwrap();
@@ -698,6 +714,7 @@ mod transaction_tests {
             .contains("2.2.2.2 foo"));
         std::fs::remove_dir_all(paths.root).unwrap();
     }
+
     #[test]
     fn native_then_ordinary_append_remains_switchable_and_resettable() {
         let (paths, hosts) = fixture();
@@ -835,7 +852,7 @@ pub struct Environment {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     api_version: u8,
-    mode: String,
+    pub mode: String,
     revision: String,
     pub applied: bool,
     entry_count: usize,
@@ -946,6 +963,9 @@ type Cache = BTreeMap<String, CachedProfile>;
 const MODES: [&str; 3] = ["daily", "staging", "prod"];
 fn profile_id(mode: &str) -> String {
     format!("{ENTRY_ID}-{mode}")
+}
+pub(crate) fn profile_refresh_id(mode: &str) -> Option<String> {
+    MODES.contains(&mode).then(|| profile_id(mode))
 }
 pub fn is_managed_id(id: &str) -> bool {
     id == ENTRY_ID || MODES.iter().any(|mode| id == profile_id(mode))
